@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>統一發票消費紀錄分析儀表板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'PingFang TC', 'Microsoft JhengHei', sans-serif; background-color: #f3f4f6; }
+        .chart-container { position: relative; height: 300px; width: 100%; }
+        table { border-collapse: collapse; width: 100%; }
+        th { background-color: #e5e7eb; position: sticky; top: 0; }
+        th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+        tr:nth-child(even) { background-color: #f9fafb; }
+        tr:hover { background-color: #f3f4f6; }
+    </style>
+</head>
+<body class="text-gray-800">
+
+<div class="container mx-auto p-4">
+    <header class="bg-blue-600 text-white p-4 rounded-lg shadow-md mb-6 flex justify-between items-center">
+        <h1 class="text-2xl font-bold">🧾 統一發票消費紀錄分析</h1>
+        <div class="flex gap-2 items-center">
+            <label class="bg-white text-blue-600 px-4 py-2 rounded cursor-pointer font-bold hover:bg-gray-100 transition">
+                匯入 CSV 發票檔
+                <input type="file" id="fileInput" accept=".csv" class="hidden" multiple>
+            </label>
+            <button id="exportExcelBtn" class="bg-green-500 text-white px-4 py-2 rounded font-bold hover:bg-green-600 transition hidden">
+                匯出當前資料 (Excel)
+            </button>
+            <button id="clearDataBtn" class="bg-red-500 text-white px-4 py-2 rounded font-bold hover:bg-red-600 transition hidden">
+                清空資料
+            </button>
+        </div>
+    </header>
+
+    <div id="controlPanel" class="bg-white p-4 rounded-lg shadow-md mb-6 hidden">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+                <label class="block text-sm font-bold mb-1">年份篩選</label>
+                <select id="filterYear" class="w-full border p-2 rounded">
+                    <option value="all">全部</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-bold mb-1">月份篩選</label>
+                <select id="filterMonth" class="w-full border p-2 rounded">
+                    <option value="all">全部</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm font-bold mb-1">商店篩選</label>
+                <input type="text" id="filterStore" placeholder="輸入商店名稱關鍵字..." class="w-full border p-2 rounded">
+            </div>
+            <div class="flex items-end">
+                <div class="bg-blue-100 p-2 rounded w-full text-center">
+                    <span class="block text-xs text-blue-600 font-bold">當前篩選總金額</span>
+                    <span id="totalAmountDisplay" class="text-2xl font-bold text-blue-800">$0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="chartSection" class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6 hidden">
+        <div class="bg-white p-4 rounded-lg shadow-md">
+            <h2 class="text-lg font-bold mb-4 text-center">每月消費趨勢 (點擊長條看明細)</h2>
+            <div class="chart-container">
+                <canvas id="monthlyChart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow-md">
+            <h2 class="text-lg font-bold mb-4 text-center">商店消費佔比 (Top 10)</h2>
+            <div class="chart-container">
+                <canvas id="storeChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div id="dataTableSection" class="bg-white p-4 rounded-lg shadow-md hidden">
+        <h2 class="text-lg font-bold mb-4" id="tableTitle">發票明細清單</h2>
+        <div class="overflow-x-auto" style="max-height: 500px;">
+            <table id="dataTable">
+                <thead>
+                    <tr>
+                        <th class="cursor-pointer hover:bg-gray-300" onclick="sortTable(0)">發票日期 ↕</th>
+                        <th class="cursor-pointer hover:bg-gray-300" onclick="sortTable(1)">發票號碼 ↕</th>
+                        <th class="cursor-pointer hover:bg-gray-300" onclick="sortTable(2)">商店名稱 ↕</th>
+                        <th class="cursor-pointer hover:bg-gray-300" onclick="sortTable(3)">品項名稱 ↕</th>
+                        <th class="cursor-pointer hover:bg-gray-300" onclick="sortTable(4)">金額 ↕</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTableBody">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="emptyState" class="text-center py-20">
+        <p class="text-gray-500 text-xl">請點擊上方按鈕匯入你的 CSV 發票紀錄檔開始分析</p>
+        <p class="text-gray-400 text-sm mt-2">支援連續匯入多個檔案，資料將自動合併計算</p>
+    </div>
+</div>
+
+<script>
+    // 全域變數
+    let allItems = []; // 儲存所有 D(明細) 的資料，並附加上 M(表頭) 的資訊
+    let filteredItems = [];
+    let monthlyChartInstance = null;
+    let storeChartInstance = null;
+
+    // DOM 元素
+    const fileInput = document.getElementById('fileInput');
+    const exportExcelBtn = document.getElementById('exportExcelBtn');
+    const clearDataBtn = document.getElementById('clearDataBtn');
+    const emptyState = document.getElementById('emptyState');
+    const controlPanel = document.getElementById('controlPanel');
+    const chartSection = document.getElementById('chartSection');
+    const dataTableSection = document.getElementById('dataTableSection');
+    const dataTableBody = document.getElementById('dataTableBody');
+    const totalAmountDisplay = document.getElementById('totalAmountDisplay');
+    
+    // 篩選器 DOM
+    const filterYear = document.getElementById('filterYear');
+    const filterMonth = document.getElementById('filterMonth');
+    const filterStore = document.getElementById('filterStore');
+
+    // 監聽檔案匯入
+    fileInput.addEventListener('change', (e) => {
+        const files = e.target.files;
+        if (files.length === 0) return;
+
+        let processedCount = 0;
+        for (let file of files) {
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const csvData = event.target.result;
+                parseInvoiceCSV(csvData);
+                processedCount++;
+                if (processedCount === files.length) {
+                    updateUI();
+                }
+            };
+            // 讀取支援 Big5 或 UTF-8，這裡預設用 UTF-8
+            reader.readAsText(file, 'UTF-8');
+        }
+        fileInput.value = ''; // 重置 input
+    });
+
+    // 解析財政部發票 CSV (M為表頭, D為明細)
+    function parseInvoiceCSV(data) {
+        const lines = data.split('\n');
+        const invoices = {}; // 暫存發票表頭 M 的資訊
+
+        lines.forEach(line => {
+            const cols = line.split('|');
+            if (cols.length < 2) return;
+
+            if (cols[0] === 'M') {
+                // M | 載具名稱 | 載具號碼 | 發票日期(YYYYMMDD) | 商店統編 | 商店店名 | 發票號碼 | 總金額 | 發票狀態 |
+                invoices[cols[6]] = {
+                    date: cols[3],
+                    year: cols[3] ? cols[3].substring(0, 4) : '未知',
+                    month: cols[3] ? cols[3].substring(4, 6) : '未知',
+                    store: cols[5] || '未知商店',
+                    invoiceNumber: cols[6]
+                };
+            } else if (cols[0] === 'D') {
+                // D | 發票號碼 | 小計 | 品項名稱 |
+                const invNum = cols[1];
+                const amount = parseInt(cols[2], 10) || 0;
+                const itemName = cols[3] || '未知品項';
+                
+                if (invoices[invNum]) {
+                    allItems.push({
+                        year: invoices[invNum].year,
+                        month: invoices[invNum].month,
+                        date: invoices[invNum].date,
+                        invoiceNumber: invNum,
+                        store: invoices[invNum].store,
+                        itemName: itemName,
+                        amount: amount
+                    });
+                }
+            }
+        });
+    }
+
+    // 更新介面與資料
+    function updateUI() {
+        if (allItems.length > 0) {
+            emptyState.classList.add('hidden');
+            controlPanel.classList.remove('hidden');
+            chartSection.classList.remove('hidden');
+            dataTableSection.classList.remove('hidden');
+            exportExcelBtn.classList.remove('hidden');
+            clearDataBtn.classList.remove('hidden');
+            
+            populateFilters();
+            applyFilters();
+        } else {
+            emptyState.classList.remove('hidden');
+            controlPanel.classList.add('hidden');
+            chartSection.classList.add('hidden');
+            dataTableSection.classList.add('hidden');
+            exportExcelBtn.classList.add('hidden');
+            clearDataBtn.classList.add('hidden');
+        }
+    }
+
+    // 產生篩選器選項
+    function populateFilters() {
+        const years = [...new Set(allItems.map(i => i.year))].sort().reverse();
+        const months = [...new Set(allItems.map(i => i.month))].sort();
+
+        // 保持目前選取的選項
+        const currentYear = filterYear.value;
+        const currentMonth = filterMonth.value;
+
+        filterYear.innerHTML = '<option value="all">全部</option>';
+        years.forEach(y => filterYear.innerHTML += `<option value="${y}">${y}年</option>`);
+        if(years.includes(currentYear)) filterYear.value = currentYear;
+
+        filterMonth.innerHTML = '<option value="all">全部</option>';
+        months.forEach(m => filterMonth.innerHTML += `<option value="${m}">${m}月</option>`);
+        if(months.includes(currentMonth)) filterMonth.value = currentMonth;
+    }
+
+    // 監聽篩選器變化
+    filterYear.addEventListener('change', applyFilters);
+    filterMonth.addEventListener('change', applyFilters);
+    filterStore.addEventListener('input', applyFilters);
+
+    function applyFilters() {
+        const y = filterYear.value;
+        const m = filterMonth.value;
+        const s = filterStore.value.trim().toLowerCase();
+
+        filteredItems = allItems.filter(item => {
+            const matchYear = (y === 'all') || (item.year === y);
+            const matchMonth = (m === 'all') || (item.month === m);
+            const matchStore = (s === '') || (item.store.toLowerCase().includes(s) || item.itemName.toLowerCase().includes(s));
+            return matchYear && matchMonth && matchStore;
+        });
+
+        // 依照日期由新到舊排序
+        filteredItems.sort((a, b) => b.date.localeCompare(a.date));
+
+        updateCharts();
+        renderTable(filteredItems);
+    }
+
+    // 繪製圖表
+    function updateCharts() {
+        // 1. 計算每月總金額
+        const monthMap = {};
+        const storeMap = {};
+        let totalSum = 0;
+
+        filteredItems.forEach(item => {
+            // 月份統計
+            const ym = `${item.year}-${item.month}`;
+            monthMap[ym] = (monthMap[ym] || 0) + item.amount;
+            
+            // 商店統計
+            storeMap[item.store] = (storeMap[item.store] || 0) + item.amount;
+
+            totalSum += item.amount;
+        });
+
+        totalAmountDisplay.innerText = `$${totalSum.toLocaleString()}`;
+
+        // 準備長條圖資料 (依時間排序)
+        const monthLabels = Object.keys(monthMap).sort();
+        const monthData = monthLabels.map(k => monthMap[k]);
+
+        if (monthlyChartInstance) monthlyChartInstance.destroy();
+        const ctxMonthly = document.getElementById('monthlyChart').getContext('2d');
+        monthlyChartInstance = new Chart(ctxMonthly, {
+            type: 'bar',
+            data: {
+                labels: monthLabels,
+                datasets: [{
+                    label: '消費金額',
+                    data: monthData,
+                    backgroundColor: 'rgba(59, 130, 246, 0.6)',
+                    borderColor: 'rgba(59, 130, 246, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                onClick: (e, elements) => {
+                    if (elements.length > 0) {
+                        const index = elements[0].index;
+                        const selectedMonth = monthLabels[index]; // ex: 2018-11
+                        const [y, m] = selectedMonth.split('-');
+                        filterYear.value = y;
+                        filterMonth.value = m;
+                        applyFilters(); // 點擊長條圖聯動篩選資料
+                        document.getElementById('tableTitle').innerText = `發票明細清單 (${selectedMonth})`;
+                        document.getElementById('dataTableSection').scrollIntoView({ behavior: 'smooth' });
+                    }
+                }
+            }
+        });
+
+        // 準備圓餅圖資料 (取 Top 10)
+        const storeArr = Object.keys(storeMap).map(k => ({store: k, amount: storeMap[k]}));
+        storeArr.sort((a, b) => b.amount - a.amount);
+        const topStores = storeArr.slice(0, 10);
+        const otherSum = storeArr.slice(10).reduce((sum, s) => sum + s.amount, 0);
+        
+        if (otherSum > 0) topStores.push({store: '其他', amount: otherSum});
+
+        if (storeChartInstance) storeChartInstance.destroy();
+        const ctxStore = document.getElementById('storeChart').getContext('2d');
+        storeChartInstance = new Chart(ctxStore, {
+            type: 'doughnut',
+            data: {
+                labels: topStores.map(s => s.store),
+                datasets: [{
+                    data: topStores.map(s => s.amount),
+                    backgroundColor: [
+                        '#ef4444', '#f97316', '#f59e0b', '#84cc16', '#22c55e', 
+                        '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#d946ef', '#9ca3af'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                onClick: (e, elements) => {
+                    if (elements.length > 0) {
+                        const index = elements[0].index;
+                        const storeName = topStores[index].store;
+                        if(storeName !== '其他') {
+                            filterStore.value = storeName;
+                            applyFilters();
+                            document.getElementById('tableTitle').innerText = `發票明細清單 (${storeName})`;
+                            document.getElementById('dataTableSection').scrollIntoView({ behavior: 'smooth' });
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // 渲染表格資料
+    function renderTable(data) {
+        dataTableBody.innerHTML = '';
+        data.forEach(item => {
+            const tr = document.createElement('tr');
+            // 將 YYYYMMDD 轉為 YYYY-MM-DD
+            const formattedDate = `${item.date.substring(0,4)}-${item.date.substring(4,6)}-${item.date.substring(6,8)}`;
+            
+            tr.innerHTML = `
+                <td>${formattedDate}</td>
+                <td class="font-mono text-gray-500">${item.invoiceNumber}</td>
+                <td>${item.store}</td>
+                <td>${item.itemName}</td>
+                <td class="text-right">$${item.amount.toLocaleString()}</td>
+            `;
+            dataTableBody.appendChild(tr);
+        });
+    }
+
+    // 表格排序邏輯
+    let sortOrders = [1, 1, 1, 1, 1]; // 1 for asc, -1 for desc
+    window.sortTable = function(colIndex) {
+        sortOrders[colIndex] *= -1;
+        filteredItems.sort((a, b) => {
+            let valA, valB;
+            switch(colIndex) {
+                case 0: valA = a.date; valB = b.date; break;
+                case 1: valA = a.invoiceNumber; valB = b.invoiceNumber; break;
+                case 2: valA = a.store; valB = b.store; break;
+                case 3: valA = a.itemName; valB = b.itemName; break;
+                case 4: return (a.amount - b.amount) * sortOrders[colIndex];
+            }
+            if (valA < valB) return -1 * sortOrders[colIndex];
+            if (valA > valB) return 1 * sortOrders[colIndex];
+            return 0;
+        });
+        renderTable(filteredItems);
+    }
+
+    // 匯出 Excel
+    exportExcelBtn.addEventListener('click', () => {
+        if(filteredItems.length === 0) {
+            alert('沒有資料可匯出！');
+            return;
+        }
+
+        // 準備給 SheetJS 的資料陣列 (含表頭)
+        const wsData = [
+            ['發票日期', '發票號碼', '商店名稱', '品項名稱', '金額']
+        ];
+
+        filteredItems.forEach(item => {
+            const formattedDate = `${item.date.substring(0,4)}-${item.date.substring(4,6)}-${item.date.substring(6,8)}`;
+            wsData.push([formattedDate, item.invoiceNumber, item.store, item.itemName, item.amount]);
+        });
+
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "消費紀錄");
+
+        // 產生檔案並下載
+        const today = new Date().toISOString().split('T')[0];
+        XLSX.writeFile(wb, `發票消費紀錄匯出_${today}.xlsx`);
+    });
+
+    // 清空資料
+    clearDataBtn.addEventListener('click', () => {
+        if(confirm('確定要清空所有匯入的資料嗎？')) {
+            allItems = [];
+            filteredItems = [];
+            document.getElementById('tableTitle').innerText = '發票明細清單';
+            filterStore.value = '';
+            updateUI();
+        }
+    });
+
+</script>
+</body>
+</html>
