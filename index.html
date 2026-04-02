@@ -150,19 +150,23 @@
 
     // 解析財政部發票 CSV (M為表頭, D為明細)
     function parseInvoiceCSV(data) {
-        const lines = data.split('\n');
+        // 處理不同作業系統的換行符號
+        const lines = data.split(/\r?\n/);
         const invoices = {}; // 暫存發票表頭 M 的資訊
 
         lines.forEach(line => {
             const cols = line.split('|');
             if (cols.length < 2) return;
 
+            // 確保只處理真正以 M 或 D 開頭的資料行 (忽略如 "表頭=M" 這種說明行)
             if (cols[0] === 'M') {
-                // M | 載具名稱 | 載具號碼 | 發票日期(YYYYMMDD) | 商店統編 | 商店店名 | 發票號碼 | 總金額 | 發票狀態 |
+                // 檢查 date 是否真的有 8 碼 (YYYYMMDD)
+                let validDate = (cols[3] && cols[3].length >= 8) ? cols[3] : null;
+                
                 invoices[cols[6]] = {
-                    date: cols[3],
-                    year: cols[3] ? cols[3].substring(0, 4) : '未知',
-                    month: cols[3] ? cols[3].substring(4, 6) : '未知',
+                    date: validDate || '未知日期',
+                    year: validDate ? validDate.substring(0, 4) : '未知',
+                    month: validDate ? validDate.substring(4, 6) : '未知',
                     store: cols[5] || '未知商店',
                     invoiceNumber: cols[6]
                 };
@@ -172,7 +176,8 @@
                 const amount = parseInt(cols[2], 10) || 0;
                 const itemName = cols[3] || '未知品項';
                 
-                if (invoices[invNum]) {
+                // 只有當找得到對應的 M 表頭，且日期不是未知時，才加入明細
+                if (invoices[invNum] && invoices[invNum].date !== '未知日期') {
                     allItems.push({
                         year: invoices[invNum].year,
                         month: invoices[invNum].month,
@@ -206,6 +211,7 @@
             dataTableSection.classList.add('hidden');
             exportExcelBtn.classList.add('hidden');
             clearDataBtn.classList.add('hidden');
+            alert("找不到有效的發票資料，請確認 CSV 檔案格式是否正確。");
         }
     }
 
